@@ -1,0 +1,874 @@
+---
+title: "Turion_Spring 2025 & 2026"
+author: "Trapper Hobble"
+date: "2025-02-18"
+output: pdf_document
+---
+```{r setup, message=FALSE, warning=FALSE, paged.print=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+# Download packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggsci)
+library(car)
+library(lme4)
+library(nlme)
+library(emmeans)
+library(drcte)
+```
+
+#### Time-to-Event Analysis using the drcte package that does a permutation statistical test. 
+##### Based off and including example scripts from Onofri A, Mesgaran MB, Ritz C (2022) A unified framework for the analysis of germination, emergence, and other time-to- event data in weed science. Weed Sci. 70: 259–271. doi: 10.1017/wsc.2022.8
+
+##### TO DECIDE = Currently using Non-Parametric function - then using the permutation test. There are parametric functions but I am not sure which to fit. Unsure about all their assumptions
+#####  doesn't seem to matter when I run it parametric for root Ploidy - 
+
+```{r}
+Turion_dat<- read.csv('Turion_Data_Long.csv', header=T)
+
+# Filter only valid genos, removing SP.00007, SP.00011, & SP.00041
+Turion_dat <- Turion_dat %>% 
+  filter(Geno %in% c("SP.00001.10","SP.00001.26","SP.00005.05","SP.00005.17","SP.00043.06","SP.00043.19"))
+
+# renaming columns
+colnames(Turion_dat)[10]<- 'DayBef'
+Turion_dat$DayData<- Turion_dat$DayBef
+
+Turion_dat$DayBef<- Turion_dat$DayBef-1
+
+# cleaning up info columns and add adiitional combinations
+Turion_dat$Geno<- gsub('.000', '-', Turion_dat$Geno) # just get the lineage
+Turion_dat$Lineage<- gsub('\\..*', '', Turion_dat$Geno)  # remove sublineage code (anything after the .)
+
+Turion_dat$Box_Epp <- paste(Turion_dat$Box., Turion_dat$EppLocation, sep="_") 
+Turion_dat$LinPloid<- paste(Turion_dat$Lineage, Turion_dat$Ploidy, sep='_')
+
+# then I am combining the 7-9 replicates from each epp
+# Groups Box_Epp of 8 (for each stage separately)
+
+Turion_dat_epp <- Turion_dat %>%
+  group_by(Year, Geno, Lineage, Ploidy,LinPloid, Box_Epp, Stage, DayBef, DayData) %>%
+  dplyr::summarise(freq = length(DayData))
+
+Turion_dat_epp<- as.data.frame(Turion_dat_epp)
+
+#
+Turion_dat_epp$Treat_Box<- paste(Turion_dat_epp$LinPloid, Turion_dat_epp$Box_Epp,sep='-')
+Turion_dat_epp$Treat_Stage<- paste(Turion_dat_epp$LinPloid, Turion_dat_epp$Stage,sep='-')
+Turion_dat_epp$Ploid_Stage<- paste(Turion_dat_epp$Ploidy, Turion_dat_epp$Stage,sep='-')
+Turion_dat_epp$Lin_PloidStage<- paste(Turion_dat_epp$Lineage ,Turion_dat_epp$Ploid_Stage,sep='-')
+Turion_dat_epp$Year_PloidStage<-paste(Turion_dat_epp$Year, Turion_dat_epp$Ploid_Stage,sep=':')
+Turion_dat_epp$Year_Lin_PloidStage<-paste(Turion_dat_epp$Year, Turion_dat_epp$Lineage, Turion_dat_epp$Ploid_Stage,sep='_')
+Turion_dat_epp$Year_Ploid<- paste(Turion_dat_epp$Year, Turion_dat_epp$Ploidy,sep='-')
+
+Turion_dat_epp <- Turion_dat_epp %>%
+  mutate(DayBef  = as.numeric(as.character(DayBef)),DayData = as.numeric(as.character(DayData)))
+```
+
+```{r}
+#Power Analysis - LOW POWER
+#Pretty sure I am approaching this right, but the 100% germination seems to be influencing the results
+#Minimum detectable hazard ratio (Schoenfeld 1983; Freedman 1982)
+alpha_l <- 0.05
+power_l <- 0.80
+n_per_lineage <- 40
+D_l <- 2 * n_per_lineage       # total events (100% germination)
+psi_l <- 1/4                   # equal group sizes
+
+MDHR <- exp((qnorm(1 - alpha_l/2) + qnorm(power_l)) / sqrt(D_l * psi_l))
+MDHR
+# WE CAN ONLY DETECT LARGE DIFFERENCES BETWEEN LINEAGES (>87% FASTER GERMINATION BETWEEN LINEAGES)
+
+alpha_p <- 0.05
+power_p <- 0.80
+n_per_ploidy <- 120
+D_p <- 2 * n_per_ploidy       # total events (100% germination)
+psi_p <- 1/4                   # equal group sizes
+
+MDHR_p <- exp((qnorm(1 - alpha_p/2) + qnorm(power_p)) / sqrt(D_p * psi_p))
+MDHR_p
+#WE CAN DETECT MORE MODERATE DIFFERENCES BETWEEN PLOIDY BUT STILL REQUIRES A PLOIDY TO GERMINATE 44% FASTER THAN OTHER 
+```
+
+
+```{r}
+## graphing all 3 stages by Ploidy_Stage and Year
+
+all <- drmte(freq ~ DayBef + DayData,curveid = Year_PloidStage,fct = NPMLE(),data = Turion_dat_epp)
+
+plot(all)
+
+obs_df <- plotData(all)
+obs_df <- obs_df$plotPoints
+obs_df$Time <- obs_df$DayData
+
+nd <- Turion_dat_epp %>%
+  distinct(Year_PloidStage, DayData) %>%
+  transmute(Time = as.numeric(DayData), Year_PloidStage)
+
+# Predict CDF for each curve at those times
+pred_df <- predict(
+  all,
+  newdata    = nd,           
+  interval   = TRUE,         
+  level      = 0.95,
+  npmle.type = "right")
+
+pred_df<-pred_df[,-3]
+
+curve_meta <- Turion_dat_epp %>%
+  distinct(Year_PloidStage, Year, Ploidy, Stage)
+
+all_data  <- pred_df
+
+zeros <- all_data %>%
+  distinct(Year_PloidStage) %>%
+  mutate(Time = 0,Prediction = 0,Lower= 0,Upper= 0)
+
+all_data <- bind_rows(all_data, zeros)
+all_data  <- all_data %>% left_join(obs_df, by = c("Year_PloidStage","Time"))
+all_data <- all_data %>% left_join(curve_meta, by = "Year_PloidStage")
+
+all_data <- all_data %>%
+  mutate(DayData = ifelse(is.na(DayData), Time, DayData),CDF = ifelse(is.na(CDF), Prediction, CDF)) 
+
+all_data <- dplyr::select(all_data, -plotid)
+
+all_data<- all_data[!duplicated(all_data), ]
+
+rm(zeros)
+```
+
+```{r}
+# Plot I like
+ggplot(all_data) +
+  geom_line(aes(x= Time,y= Prediction,group= Year_PloidStage,linetype= Stage,color = Ploidy),linewidth = 1.25) +
+  facet_grid(Year ~ .) +
+  scale_color_manual(values = c("4X" = "orange2","2X" = "blue2")) +
+  scale_linetype_manual(values = c("Float" = "dotted","Frond" = "solid","Root" = "dashed")) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 1.02),breaks = seq(0, 1, 0.25),expand = c(0, 0)) +
+  labs( x = "Day",y = "Proportion of Turions",color = "Ploidy") +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.major.x = element_blank(),panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3))
+ #ggsave("Turions_Year_Overlay_Lines.pdf",width = 3, units="in")
+```
+
+```{r}
+# I think I am doing my planned contrasts correctly here and throughout
+# Test whether Ploidy:Stage changed between 2025 and 2026
+
+# Year-to-year comparisons
+comparisons <- list(
+  c("2025:2X-Float", "2026:2X-Float"),
+  c("2025:2X-Frond", "2026:2X-Frond"),
+  c("2025:2X-Root",  "2026:2X-Root"),
+  c("2025:4X-Float", "2026:4X-Float"),
+  c("2025:4X-Frond", "2026:4X-Frond"),
+  c("2025:4X-Root",  "2026:4X-Root")
+)
+
+results <- data.frame(
+  Comparison = character(),
+  N1 = integer(),
+  N2 = integer(),
+  T_value = numeric(),
+  P_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (pr in comparisons) {
+
+  testdat <- subset(
+    Turion_dat_epp,
+    Year_PloidStage %in% pr
+  )
+
+  fit <- drmte(
+    freq ~ DayBef + DayData,
+    curveid = Year_PloidStage,
+    fct = NPMLE(),
+    data = testdat
+  )
+
+  tst <- compCDF(
+    fit,
+    scores = "wmw",
+    B = 10000
+  )
+
+  results <- rbind(
+    results,
+    data.frame(
+      Comparison = paste(pr[1], "vs", pr[2]),
+      N1 = tst$N[1],
+      N2 = tst$N[2],
+      T_value = round(tst$val0, 3),
+      P_value = tst$pvalb
+    )
+  )
+}
+
+results$P_value <- format(results$P_value, scientific = TRUE, digits = 3)
+
+print(results, row.names = FALSE)
+```
+
+```{r, eval=FALSE}
+#Parameter Estimation - THIS TAKES A WHILE
+qmat <- quantile(all, probs = c(0.1,0.25,0.5,0.75,0.9), B = 1999, robust = T,interval = T, rate = F)
+```
+
+```{r}
+# Create quantile/synchrony table
+# Convert rownames into columns
+qtab <- qmat %>%
+  tibble::rownames_to_column("Curve")
+
+# Extract identifiers
+qtab <- qtab %>%
+  separate(
+    Curve,
+    into = c("Group", "Prob"),
+    sep = "\\.(?=[0-9]+%)"
+  ) %>%
+  mutate(
+    Prob = paste0("T", gsub("%", "", Prob))
+  )
+
+# Keep median estimate
+qtab <- qtab %>%
+  dplyr::select(Group, Prob, Median, Lower, Upper)
+
+# Convert to wide format
+quant_summary <- qtab %>%
+  dplyr::select(Group, Prob, Median) %>%
+  pivot_wider(
+    names_from = Prob,
+    values_from = Median
+  )
+
+# Split treatment names
+quant_summary <- quant_summary %>%
+  separate(
+    Group,
+    into = c("Year","Ploidy","Stage"),
+    sep = "[:\\-]"
+  )
+
+# Synchrony metrics
+quant_summary <- quant_summary %>%
+  mutate(
+    T90_T10 = T90 - T10,
+    T75_T25 = T75 - T25
+  )
+
+quant_summary
+#readr::write_csv(quant_summary, "quant_summary.csv")
+```
+
+```{r}
+ploidy_effects <- quant_summary %>%
+  dplyr::select(Year, Stage, Ploidy, T50) %>%
+  pivot_wider(
+    names_from = Ploidy,
+    values_from = T50
+  ) %>%
+mutate(
+  Delta_T50 = `2X` - `4X`,
+  Ratio_T50 = `2X` / `4X`,
+  Percent_Change = 100 * (`2X` - `4X`) / `4X`)
+  
+
+ploidy_effects
+```
+
+```{r}
+t50_ci <- qtab %>%
+  filter(Prob == "T50") %>%
+  separate(
+    Group,
+    into = c("Year","Ploidy","Stage"),
+    sep = "[:\\-]"
+  ) %>%
+  dplyr::select(
+    Year,
+    Ploidy,
+    Stage,
+    T50 = Median,
+    Lower,
+    Upper
+  )
+
+t50_ci
+```
+
+```{r}
+year_effects <- quant_summary %>%
+  dplyr::select(Year, Stage, Ploidy, T50) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = T50
+  ) %>%
+  mutate(
+    Delta_T50 = `2025` - `2026`,
+    Ratio_T50 = `2025` / `2026`,
+    Percent_Change = 100 * (`2025` - `2026`) / `2026`
+  )
+
+year_effects
+
+```
+
+############################################################################################################################
+
+```{r}
+# Global lineage tests - DID THESE BUT SINCE WE ARE SHOWING THE PAIRWISE I DIDN'T MENTION IT
+# Tests whether any of the three lineages differ within each
+# Year × Stage × Ploidy combination
+
+combos <- unique(
+  Turion_dat_epp[c("Year", "Stage", "Ploidy")]
+)
+
+global_lineage <- list()
+
+for(i in seq_len(nrow(combos))) {
+
+  yr <- combos$Year[i]
+  st <- combos$Stage[i]
+  pl <- combos$Ploidy[i]
+
+  d <- subset(
+    Turion_dat_epp,
+    Year == yr &
+    Stage == st &
+    Ploidy == pl
+  )
+
+  d <- droplevels(as.data.frame(d))
+
+  # Skip if fewer than 2 lineages remain
+  if(length(unique(d$Lineage)) < 2) {
+    cat(
+      "\nSkipping:",
+      yr, st, pl,
+      "- only",
+      length(unique(d$Lineage)),
+      "lineage present\n"
+    )
+    next
+  }
+
+  cat(
+    "\nRunning:",
+    yr, st, pl,
+    "| Lineages =",
+    paste(sort(unique(d$Lineage)), collapse = ", "),
+    "\n"
+  )
+
+  fit <- try(
+    drmte(
+      freq ~ DayBef + DayData,
+      curveid = Lineage,
+      fct = NPMLE(),
+      data = d,
+      control = drmteControl(conCheck = FALSE)
+    ),
+    silent = TRUE
+  )
+
+  if(inherits(fit, "try-error")) {
+    cat(
+      "Model failed for:",
+      yr, st, pl, "\n"
+    )
+    next
+  }
+
+  tst <- try(
+    compCDF(
+      fit,
+      scores = "wmw",
+      B = 10000
+    ),
+    silent = TRUE
+  )
+
+  if(inherits(tst, "try-error")) {
+    cat(
+      "Comparison failed for:",
+      yr, st, pl, "\n"
+    )
+    next
+  }
+
+  global_lineage[[length(global_lineage) + 1]] <- data.frame(
+    Year = yr,
+    Stage = st,
+    Ploidy = pl,
+    N_Lineages = length(unique(d$Lineage)),
+    Test_Statistic = tst$val0,
+    P_value = tst$pvalb
+  )
+}
+
+global_lineage <- do.call(rbind, global_lineage)
+
+global_lineage <- global_lineage %>%
+  mutate(
+    P_adj = p.adjust(P_value, method = "holm")
+  ) %>%
+  arrange(P_value)
+
+print(global_lineage, row.names = FALSE)
+
+```
+
+############################################################################################################################
+
+```{r}
+# Pairwise lineage effects
+## graphing all 3 stages by Lineage, Ploidy_Stage and Year
+
+lin <- drmte(freq ~ DayBef + DayData,curveid = Year_Lin_PloidStage,fct = NPMLE(),data =droplevels(subset(Turion_dat_epp, !is.na(Year_Lin_PloidStage))), control = drmteControl(conCheck = FALSE))
+
+plot(lin)
+
+obs_df2 <- plotData(lin)
+obs_df2 <- obs_df2$plotPoints
+obs_df2$Time <- obs_df2$DayData
+
+nd2 <- Turion_dat_epp %>%
+  distinct(Year_Lin_PloidStage, DayData) %>%
+  transmute(Time = as.numeric(DayData), Year_Lin_PloidStage)
+
+# Predict CDF for each curve at those times
+pred_df2 <- predict(
+  lin,
+  newdata    = nd2,           
+  interval   = TRUE,         
+  level      = 0.95,
+  npmle.type = "right")
+
+pred_df2<-pred_df2[,-3]
+
+curve_meta2 <- Turion_dat_epp %>%
+  distinct(Year_Lin_PloidStage,Lineage, Year, Ploidy, Stage)
+
+lin_data  <- pred_df2
+
+zeros2 <- lin_data %>%
+  distinct(Year_Lin_PloidStage) %>%
+  mutate(Time = 0,Prediction = 0,Lower= 0,Upper= 0)
+
+lin_data <- bind_rows(lin_data, zeros2)
+lin_data  <- lin_data %>% left_join(obs_df2, by = c("Year_Lin_PloidStage","Time"))
+lin_data <- lin_data %>% left_join(curve_meta2, by = "Year_Lin_PloidStage")
+
+lin_data <- lin_data %>%
+  mutate(DayData = ifelse(is.na(DayData), Time, DayData),CDF = ifelse(is.na(CDF), Prediction, CDF)) 
+
+lin_data <- dplyr::select(lin_data, -plotid)
+
+lin_data<- lin_data[!duplicated(lin_data), ]
+
+lin_data$PloidStage <- sub(".*_", "", lin_data$Year_Lin_PloidStage)
+
+lin_data$color<-NA
+lin_data$color[which(lin_data$Lineage=='SP-01')] <- '#5B8C5A'
+lin_data$color[which(lin_data$Lineage=='SP-05')] <- '#8C6BB1'
+lin_data$color[which(lin_data$Lineage=='SP-43')] <- '#B50D60'
+
+lin_data$Stage <- factor(lin_data$Stage, levels = c("Float", "Root", "Frond"))
+
+lin_data$PloidStage <- factor(lin_data$PloidStage,levels=c("2X-Float","2X-Root","2X-Frond","4X-Float","4X-Root","4X-Frond"))
+
+rm(zeros2)
+```
+
+```{r}
+ggplot(lin_data) +
+  geom_line(aes(x=Time,y=Prediction,group=Year_Lin_PloidStage,linetype =Ploidy),color="black",linewidth =0.75,alpha =0.9) +
+  facet_grid(Year ~ Stage) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 1.02), breaks = seq(0, 1, 0.25), expand = c(0, 0)) +
+  labs(x = "Day", y = "Proportion of Turions") +
+  theme_bw()
+#ggsave("Turions_Year_Lineage_Ploidy.jpg")
+```
+
+```{r}
+# Figures I Like
+ggplot(lin_data) +
+  geom_line(aes(x =Time,y =Prediction,color=color,group=Year_Lin_PloidStage,linetype =Stage),linewidth =1.25) +
+  facet_grid(Year ~ PloidStage) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 1.02), breaks = seq(0, 1, 0.25), expand = c(0, 0)) +
+  scale_linetype_manual(values = c("Float" = "dotted","Frond" = "solid","Root" = "dashed")) +
+  labs(x = "Day", y = "Proportion of Turions") +
+  scale_color_identity() +
+  theme_bw() +
+  theme(panel.grid.major.x = element_blank(),panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3))
+#ggsave("Turions_Year_Lineage_Ploidy_Lines_byPloidStage.pdf",width = 6, units="in")
+
+ggplot(lin_data) +
+  geom_line(aes(x =Time,y =Prediction,color=color,group=Year_Lin_PloidStage,linetype =Ploidy),linewidth =1.25) +
+  facet_grid(Year ~ Stage) +
+  scale_x_continuous(breaks = 0:6) +
+  scale_y_continuous(limits = c(0, 1.02), breaks = seq(0, 1, 0.25), expand = c(0, 0)) +
+  labs(x = "Day", y = "Proportion of Turions") +
+  scale_color_identity() +
+  theme_bw() +
+  theme(panel.grid.major.x = element_blank(),panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3))
+#ggsave("Turions_Year_Lineage_Ploidy_Lines_byStage.pdf",width = 6, units="in")
+```
+
+```{r}
+# Testing whether lineages varied from each other within Year:Stage:Ploidy
+combos <- unique(
+  Turion_dat_epp[c("Year","Stage","Ploidy")]
+)
+
+results_lin <- list()
+
+for(i in seq_len(nrow(combos))) {
+
+  yr <- combos$Year[i]
+  st <- combos$Stage[i]
+  pl <- combos$Ploidy[i]
+
+  d <- subset(
+    Turion_dat_epp,
+    Year == yr &
+      Stage == st &
+      Ploidy == pl
+  )
+
+  lin_pairs <- combn(unique(d$Lineage), 2, simplify = FALSE)
+
+  for(pr in lin_pairs) {
+
+    dd <- droplevels(subset(d, Lineage %in% pr))
+
+    if(length(unique(dd$Lineage)) < 2) next
+
+    fit <- try(
+      drmte(
+        freq ~ DayBef + DayData,
+        curveid = Lineage,
+        fct = NPMLE(),
+        data = dd,
+        control = drmteControl(conCheck = FALSE)
+      ),
+      silent = TRUE
+    )
+
+    if(inherits(fit, "try-error")) next
+
+    tst <- compCDF(fit, scores = "wmw", B = 10000)
+
+    results_lin[[length(results_lin) + 1]] <- data.frame(
+      Year = yr,
+      Stage = st,
+      Ploidy = pl,
+      Comparison = paste(pr, collapse = " vs "),
+      N1 = tst$N[1],
+      N2 = tst$N[2],
+      T_value = round(tst$val0, 3),
+      P_value = tst$pvalb
+    )
+  }
+}
+
+results_lin <- do.call(rbind, results_lin)
+
+results_lin <- results_lin %>%
+  group_by(Year, Stage, Ploidy) %>%
+  mutate(
+    P_adj = p.adjust(P_value, method = "holm")
+  ) %>%
+  ungroup()
+
+results_lin <- results_lin[order(
+  results_lin$Year,
+  results_lin$Stage,
+  results_lin$Ploidy,
+  results_lin$P_value
+), ]
+
+print(results_lin, row.names = FALSE)
+#readr::write_csv(results_lin, "results_lin.csv")
+```
+
+```{r}
+combos <- unique(
+  Turion_dat_epp[c("Year","Stage")]
+)
+
+results_ploidy <- list()
+
+for(i in seq_len(nrow(combos))) {
+
+  yr <- combos$Year[i]
+  st <- combos$Stage[i]
+
+  d <- subset(
+    Turion_dat_epp,
+    Year == yr &
+    Stage == st
+  )
+
+  fit <- drmte(
+    freq ~ DayBef + DayData,
+    curveid = Ploidy,
+    fct = NPMLE(),
+    data = d
+  )
+
+  tst <- compCDF(fit, scores = "wmw", B = 10000)
+
+  results_ploidy[[i]] <- data.frame(
+    Year = yr,
+    Stage = st,
+    Comparison = "2X vs 4X",
+    T_value = tst$val0,
+    P_value = tst$pvalb
+  )
+}
+
+results_ploidy <- do.call(rbind, results_ploidy)
+
+results_ploidy <- transform(
+  results_ploidy,
+  T_value = round(T_value, 3),
+  P_value = signif(P_value, 3)
+)
+
+results_ploidy <- results_ploidy[
+  , c("Year", "Stage", "Comparison", "T_value", "P_value")
+]
+
+print(results_ploidy, row.names = FALSE)
+```
+
+```{r, eval=FALSE}
+#Parameter Estimation - ALSO TAKES A WHILE
+qmat2 <- quantile(lin, probs = c(0.1,0.25,0.5,0.75,0.9), B = 1999, robust = T,interval = T, rate = F)
+```
+
+```{r}
+# Create quantile/synchrony table
+# Convert rownames into columns
+qtab2 <- qmat2 %>%
+  tibble::rownames_to_column("Curve")
+
+# Extract identifiers
+qtab2 <- qtab2 %>%
+  separate(
+    Curve,
+    into = c("Group", "Prob"),
+    sep = "\\.(?=[0-9]+%)"
+  ) %>%
+  mutate(
+    Prob = gsub("%", "", Prob),
+    Prob = paste0("T", Prob)
+  )
+
+# Keep median estimate
+qtab2 <- qtab2 %>%
+  dplyr::select(Group, Prob, Median, Lower, Upper)
+
+# Convert to wide format
+quant_summary2 <- qtab2 %>%
+  dplyr::select(Group, Prob, Median) %>%
+  pivot_wider(
+    names_from = Prob,
+    values_from = Median
+  )
+
+# Split treatment names
+quant_summary2 <- quant_summary2 %>%
+  separate(
+    Group,
+    into = c("Year", "Lineage","Ploid_Stage"),
+    sep = "_"
+  ) %>%
+  separate(
+    Ploid_Stage,
+    into = c("Ploidy", "Stage"),
+    sep = "-"
+  )
+
+# Synchrony metrics
+quant_summary2 <- quant_summary2 %>%
+  mutate(
+    T90_T10 = T90 - T10,
+    T75_T25 = T75 - T25
+  )
+
+quant_summary2
+#readr::write_csv(quant_summary2, "quant_summary2.csv")
+```
+
+```{r}
+ploidy_effects2 <- quant_summary2 %>%
+  dplyr::select(Year, Lineage, Ploidy, Stage, T50) %>%
+  pivot_wider(
+    names_from = Ploidy,
+    values_from = T50
+  ) %>%
+  mutate(
+  Delta_T50 = `2X` - `4X`,
+  Ratio_T50 = `2X` / `4X`,
+  Percent_Change = 100 * (`2X` - `4X`) / `4X`)
+
+ploidy_effects2
+
+lineage_summary2 <- ploidy_effects2 %>%
+  group_by(Stage) %>%
+  summarise(
+    Mean_Delta_T50 = mean(Delta_T50),
+    SD_Delta_T50   = sd(Delta_T50),
+    N_negative     = sum(Delta_T50 < 0),
+    N_positive     = sum(Delta_T50 > 0)
+  )
+
+lineage_summary2
+```
+
+```{r}
+t50_ci2 <- qtab2 %>%
+  filter(Prob == "T50") %>%
+  separate(
+    Group,
+    into = c("Year", "Lineage", "Ploid_Stage"),
+    sep = "_"
+  ) %>%
+  separate(
+    Ploid_Stage,
+    into = c("Ploidy", "Stage"),
+    sep = "-"
+  ) %>%
+  dplyr::select(
+    Year,
+    Lineage,
+    Ploidy,
+    Stage,
+    T50 = Median,
+    Lower,
+    Upper
+  )
+```
+
+```{r}
+# Calculating CIs for ΔT50 for figure below
+t50_lineage <- t50_ci2 %>%
+  tidyr::pivot_wider(
+    names_from = Ploidy,
+    values_from = c(T50, Lower, Upper)
+  ) %>%
+  mutate(
+    Delta_T50   = T50_2X - T50_4X,
+    Delta_Lower = Lower_2X - Upper_4X,
+    Delta_Upper = Upper_2X - Lower_4X
+  )
+
+t50_lineage
+
+plot_lineage <- t50_lineage %>%
+  mutate(
+    Group = toupper(Stage),
+    Row = paste0(Lineage, " (", Year, ")")
+  ) %>%
+  dplyr::select(
+    Group,
+    Row,
+    Year,
+    Delta_T50,
+    Delta_Lower,
+    Delta_Upper
+  )
+
+plot_global <- t50_ci %>%
+  tidyr::pivot_wider(
+    names_from = Ploidy,
+    values_from = c(T50, Lower, Upper)
+  ) %>%
+  mutate(
+    Delta_T50   = T50_2X - T50_4X,
+    Delta_Lower = Lower_2X - Upper_4X,
+    Delta_Upper = Upper_2X - Lower_4X,
+    Group = "GLOBAL",
+    Row = Stage
+  ) %>%
+  dplyr::select(
+    Group,
+    Row,
+    Year,
+    Delta_T50,
+    Delta_Lower,
+    Delta_Upper
+  )
+
+plot_dat_ci <- bind_rows(
+  plot_global,
+  plot_lineage
+)
+
+plot_dat_ci$color<-NA
+plot_dat_ci$color[plot_dat_ci$Row %in% c("Float", "Frond", "Root")] <- 'black'
+plot_dat_ci$color[plot_dat_ci$Row %in% c("SP-01 (2025)", "SP-01 (2026)")] <- '#5B8C5A'
+plot_dat_ci$color[plot_dat_ci$Row %in% c("SP-05 (2025)", "SP-05 (2026)")] <- '#8C6BB1'
+plot_dat_ci$color[plot_dat_ci$Row %in% c("SP-43 (2025)", "SP-43 (2026)")] <- '#B50D60'
+
+plot_dat_ci$Row[plot_dat_ci$Group == "GLOBAL"] <-
+  paste0(
+    plot_dat_ci$Row[plot_dat_ci$Group == "GLOBAL"],
+    " (",
+    plot_dat_ci$Year[plot_dat_ci$Group == "GLOBAL"],
+    ")"
+  )
+
+plot_dat_ci$Row <- factor(
+  plot_dat_ci$Row,
+  levels = rev(c(
+    "SP-01 (2025)","SP-01 (2026)","SP-05 (2025)", "SP-05 (2026)","SP-43 (2025)","SP-43 (2026)",
+    "Float (2025)", "Float (2026)", "Root (2025)", "Root (2026)","Frond (2025)", "Frond (2026)")))
+
+plot_dat_ci$Group <- factor(
+  plot_dat_ci$Group,
+  levels = c(
+    "GLOBAL",
+    "FLOAT",
+    "ROOT",
+    "FROND"
+  )
+)
+```
+
+```{r}
+ggplot(plot_dat_ci, aes(x = Delta_T50, y = Row)) +
+  geom_vline(xintercept = 0, color = "black", linetype = 2) +
+  geom_errorbarh(aes(xmin = Delta_Lower, xmax = Delta_Upper), color = "black", height = 0.5, linewidth = 0.5) +
+  geom_point(data = subset(plot_dat_ci, Group == "GLOBAL"),aes(shape = Year, color = color), size = 4) +
+  geom_point(data = subset(plot_dat_ci, Group != "GLOBAL"),aes(shape = Year, color = color), size = 3.25) +
+  facet_grid(Group ~ ., scales = "free_y", space = "free_y") +
+  scale_color_identity() +
+  scale_shape_manual(values = c("2025" = 16, "2026" = 1)) +
+  coord_cartesian(clip = "off") +
+  labs(x = "Difference in median event time (days)", y = NULL) +
+  theme_bw() +
+  theme(strip.background = element_blank(),panel.grid.major.y = element_blank(),panel.grid.minor =element_blank(),
+      legend.position = "bottom", plot.margin = margin(15, 15, 5, 15),plot.title = element_text(hjust = 0.5, face = "bold"))
+
+#ggsave("ForestPlot_ES.pdf",width = 4, units="in")
+```
+
+
