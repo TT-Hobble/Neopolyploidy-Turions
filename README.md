@@ -2,7 +2,6 @@
 This repository contains data CSVs and analysis code used to examine the association between polyploidy and turion germination for the Hobble et al. manuscript "Neopolyploidy accelerates early stages of turion germination in Spirodela polyrhiza".
 
 ## Dataset Description
-
 This dataset contains germination observations for diploid (2X) and neopolyploid (4X) Spirodela polyrhiza turions. Individual turions were monitored throughout germination, and the day on which key developmental milestones (flotation, root emergence, and first daughter-frond production) occurred was recorded.
 
 ### Directory Structure
