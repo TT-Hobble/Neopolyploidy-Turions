@@ -1,7 +1,7 @@
 ---
 title: "Turion_Spring 2025 & 2026"
 author: "Trapper Hobble"
-date: "2025-02-18"
+date: "`r Sys.Date()`"
 output: pdf_document
 ---
 ```{r setup, message=FALSE, warning=FALSE, paged.print=FALSE}
