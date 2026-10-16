@@ -22,9 +22,6 @@ library(drcte)
 #### Time-to-Event Analysis using the drcte package that does a permutation statistical test. 
 ##### Based off and including example scripts from Onofri A, Mesgaran MB, Ritz C (2022) A unified framework for the analysis of germination, emergence, and other time-to- event data in weed science. Weed Sci. 70: 259–271. doi: 10.1017/wsc.2022.8
 
-##### TO DECIDE = Currently using Non-Parametric function - then using the permutation test. There are parametric functions but I am not sure which to fit. Unsure about all their assumptions
-#####  doesn't seem to matter when I run it parametric for root Ploidy - 
-
 ```{r}
 Turion_dat<- read.csv('Turion_Data_Long.csv', header=T)
 
